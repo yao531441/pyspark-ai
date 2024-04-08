@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import re
+import time
 from typing import Callable, List, Optional
 from urllib.parse import urlparse
 
@@ -480,6 +481,7 @@ class SparkAI:
             )
         else:
             # Otherwise, generate the SQL query with a prompt with few-shot examples
+            print(f"-------------------------Start generating sql query with a prompt with few-shot examples-------------------------\n\n")
             return self.sql_chain.run(
                 view_name=temp_view_name,
                 sample_vals=sample_vals_str,
@@ -496,6 +498,7 @@ class SparkAI:
         df.createOrReplaceTempView(temp_view_name)
         schema_lst = self._get_df_schema(df)
         schema_str = "\n".join(schema_lst)
+        print(f"-------------------------Current table schema from df is:-------------------------\n\n {schema_str}\n")
         sample_rows = self._get_sample_spark_rows(df)
         schema_row_lst = []
         for index in range(len(schema_lst)):
@@ -505,8 +508,9 @@ class SparkAI:
             curr_schema_row = f"({schema_lst[index]}, {str(sample_vals)})"
             schema_row_lst.append(curr_schema_row)
         sample_vals_str = "\n".join([str(val) for val in schema_row_lst])
+        print(f"-------------------------Current sample vals are:-------------------------\n\n {sample_vals_str}\n")
         comment = self._get_table_comment(df)
-
+        print(f"-------------------------Current table comment is-------------------------\n\n {comment}\n")
         if cache:
             cache_key = ReActSparkSQLAgent.cache_key(desc, schema_str)
             cached_result = self._cache.lookup(key=cache_key)
@@ -523,6 +527,65 @@ class SparkAI:
         else:
             return self._get_sql_query(temp_view_name, sample_vals_str, comment, desc)
 
+
+    def _get_table_schema(self, table: str) -> list:
+        df = self._spark.sql(f"select * from {table}")
+        schema_lst = [f"{name}, {dtype}" for name, dtype in df.dtypes]
+        return schema_lst
+
+    def _get_sample_spark_rows(self, df: DataFrame) -> list:
+
+        if self._sample_rows_in_table_info <= 0:
+            return []
+        try:
+            sample_rows = SparkUtils.get_dataframe_results(df.limit(3))
+            return sample_rows
+        except Exception:
+            # If fail to get sample rows, return empty list
+            return []
+
+    def _get_sample_spark_rows_tpch(self, table: str) -> list:
+ 
+        if self._sample_rows_in_table_info <= 0:
+            return []
+        df = self._spark.sql(f"select * from {table}")
+        try:
+            sample_rows = SparkUtils.get_dataframe_results(df.limit(3))
+            return sample_rows
+        except Exception:
+            # If fail to get sample rows, return empty list
+            return []
+
+    def _get_transform_sql_query_tpch(self, desc: str, table: str, cache: bool) -> str:
+        self.log(f"Retrieve table schema for {table} \n")
+        schema_lst = self._get_table_schema(table)
+        schema_str = "\n".join(schema_lst)
+        print(f"-------------------------Current table schema from df is:-------------------------\n\n {schema_str}\n")
+        sample_rows = self._get_sample_spark_rows_tpch(table)
+        schema_row_lst = []
+        for index in range(len(schema_lst)):
+            sample_vals = []
+            for sample_row in sample_rows:
+                sample_vals.append(sample_row[index])
+            curr_schema_row = f"({schema_lst[index]}, {str(sample_vals)})"
+            schema_row_lst.append(curr_schema_row)
+        sample_vals_str = "\n".join([str(val) for val in schema_row_lst])
+        print(f"-------------------------Current sample vals are:-------------------------\n\n {sample_vals_str}\n")
+        #comment = self._get_table_comment(df)
+        comment = ""
+        #print(f"-------------------------Current table comment is-------------------------\n\n {comment}\n")
+        return self._get_sql_query(table, sample_vals_str, comment, desc)
+
+    def transform_df_tpch(self, desc: str, table: str, cache: bool = False) -> DataFrame:
+        print(f"---------------------TPCH Table {table}------------------------------\n\n")
+        start_time = time.time()
+        sql_query = self._get_transform_sql_query_tpch(desc, table, cache)
+        end_time = time.time()
+        get_transform_sql_query_time = end_time - start_time
+        print(f"-------------------------End get_transform_sql_query-------------------------\n\n get_transform_sql_query_time: {get_transform_sql_query_time} seconds\n")
+        print(f"-------------------------Received query:-------------------------\n\n {sql_query}\n")
+        return self._spark.sql(sql_query)
+
     def transform_df(self, df: DataFrame, desc: str, cache: bool = True) -> DataFrame:
         """
         This method applies a transformation to a provided Spark DataFrame,
@@ -535,7 +598,13 @@ class SparkAI:
         :return: Returns a new Spark DataFrame that is the result of applying the specified transformation
                  on the input DataFrame.
         """
+        print(f"-------------------------Start get_transform_sql_query-------------------------\n\n")
+        start_time = time.time()
         sql_query = self._get_transform_sql_query(df, desc, cache)
+        end_time = time.time()
+        get_transform_sql_query_time = end_time - start_time
+        print(f"-------------------------End get_transform_sql_query-------------------------\n\n get_transform_sql_query_time: {get_transform_sql_query_time} seconds\n")
+        print(f"-------------------------Received query:-------------------------\n\n {sql_query}\n")
         return self._spark.sql(sql_query)
 
     def explain_df(self, df: DataFrame, cache: bool = True) -> str:
